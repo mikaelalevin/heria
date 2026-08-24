@@ -6,6 +6,19 @@ import Anthropic from "@anthropic-ai/sdk";
 
 const anthropic = new Anthropic();
 
+// Ger en grammatiskt korrekt svensk formulering av ett förflutet datum,
+// t.ex. "i torsdags" (aldrig "på torsdag", som syftar på en kommande dag).
+function relativeSwedishDayPhrase(dateStr: string): string {
+  const days = Math.max(0, Math.round((Date.now() - new Date(dateStr).getTime()) / 86_400_000));
+  if (days === 0) return "idag";
+  if (days === 1) return "igår";
+  if (days <= 6) {
+    const weekdays = ["i söndags", "i måndags", "i tisdags", "i onsdags", "i torsdags", "i fredags", "i lördags"];
+    return weekdays[new Date(dateStr).getDay()];
+  }
+  return `för ${days} dagar sedan`;
+}
+
 export async function POST(request: Request) {
   const supabase = await createClient();
 
@@ -124,7 +137,14 @@ Om du är nyfiken är du mer än välkommen att komma förbi butiken, så visar 
   const firstName = customer.first_name ?? customer.email.split("@")[0];
   const fullName = [customer.first_name, customer.last_name].filter(Boolean).join(" ") || customer.email;
 
-  const lastItems = orders.slice(0, 3).flatMap((o) => {
+  // Undvik att räkna det köp vi tackar för som "tidigare köpt" — annars tror
+  // modellen att kunden köpt samma plagg två gånger och skriver "igen".
+  const historyOrders =
+    type === "thank_you" && latestInStoreOrder
+      ? orders.filter((o) => o.created_at !== latestInStoreOrder!.created_at)
+      : orders;
+
+  const lastItems = historyOrders.slice(0, 3).flatMap((o) => {
     if (!Array.isArray(o.items)) return [];
     return o.items.map((item) => {
       if (typeof item === "object" && item !== null) {
@@ -158,9 +178,7 @@ Om du är nyfiken är du mer än välkommen att komma förbi butiken, så visar 
         return String(item).trim();
       }).filter(Boolean).join(", ") || null
     : null;
-  const latestOrderDate = latestOrder
-    ? new Date(latestOrder.created_at).toLocaleDateString("sv-SE", { day: "numeric", month: "long" })
-    : null;
+  const latestOrderDate = latestOrder ? relativeSwedishDayPhrase(latestOrder.created_at) : null;
 
   const taskLine =
     type === "thank_you"
@@ -174,7 +192,7 @@ Om du är nyfiken är du mer än välkommen att komma förbi butiken, så visar 
       ? `SENASTE KÖP (det som ska tackas för):
 ${latestOrderItemsText ? `- Köpte: ${latestOrderItemsText}` : "- Köpte: ett plagg i butiken"}
 ${latestOrder ? `- Summa: ${latestOrder.total.toLocaleString("sv")} kr` : ""}
-${latestOrderDate ? `- Datum: ${latestOrderDate}` : ""}`
+${latestOrderDate ? `- När: "${latestOrderDate}" (använd EXAKT denna formulering för tidpunkten, ändra den inte — t.ex. inte "på torsdag" om det står "i torsdags")` : ""}`
       : type === "follow_up"
       ? `UPPFÖLJNING — KONTEXT FRÅN SÄLJAREN:
 - ${followUpContext}`
@@ -185,7 +203,7 @@ ${predReason ? `- Anledning: ${predReason}` : ""}`;
 
   const contentInstruction =
     type === "thank_you"
-      ? "- Tacka specifikt för det kunden just köpte, nämn plagget/plaggen naturligt — inget säljande, bara uppriktig tack"
+      ? "- Tacka specifikt för det kunden just köpte, nämn plagget/plaggen naturligt — inget säljande, bara uppriktig tack. Säg inte att kunden köpt plagget \"igen\" eller \"en gång till\" om det inte uttryckligen står i \"Tidigare köpt\" — anta aldrig upprepningar som inte finns i datan"
       : type === "follow_up"
       ? "- Utgå från kontexten säljaren gett ovan och följ upp naturligt, som ett brev från någon som kommer ihåg samtalet"
       : `- Nämn ett specifikt plagg eller kategori kopplat till prediktionen — naturligt, inte påtvingat
@@ -213,7 +231,9 @@ ${customer.notes ? `- Säljarens anteckning: ${customer.notes}` : ""}
 ${typeSection}
 ${brandVoiceSection}
 INSTRUKTIONER:
-- Skriv på svenska, varmt och personligt
+- Skriv på svenska, varmt och personligt — men lätt och ledigt i tonfallet, som ett sms till någon du känner, inte som ett vykort
+- Skriv ALDRIG klyschor eller vaga känslomeningar av typen "det betyder mer än du kanske tror", "det värmer verkligen" eller "du är så uppskattad" — håll dig till konkreta, sanna saker
+- Hitta inte på detaljer som inte finns i KUNDINFO eller ovan — t.ex. att kunden rekommenderar butiken till vänner, om det inte uttryckligen står angivet
 ${contentInstruction}
 - Max 5 meningar, gärna i 2–3 korta stycken — som ett riktigt mejl, inte en enda lång text
 ${closingInstruction}
