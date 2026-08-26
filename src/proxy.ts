@@ -32,6 +32,13 @@ export async function proxy(request: NextRequest) {
     if (user && request.nextUrl.pathname.startsWith("/auth")) {
       return NextResponse.redirect(new URL("/dashboard", request.url));
     }
+
+    if (!user && !request.nextUrl.pathname.startsWith("/auth")) {
+      if (request.nextUrl.pathname.startsWith("/api")) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      }
+      return NextResponse.redirect(new URL("/auth/login", request.url));
+    }
   } catch {
     // pass through on auth errors
   }
